@@ -65,7 +65,7 @@ def dagger_loop(rounds=3, episodes_per_round=3):
     # Merge Phase 0 data
     if merge_datasets(current_data_files, agg_data_path):
         print("Training Model M0...")
-        train_model(data_path=agg_data_path, model_path=m0_path, epochs=30)
+        train_model(data_path=agg_data_path, model_path=m0_path, epochs=10)
     else:
         print("Error: Phase 0 data generation failed.")
         return
@@ -109,7 +109,7 @@ def dagger_loop(rounds=3, episodes_per_round=3):
         # 3. Retrain on Aggregated Data
         next_model = os.path.join(artifact_dir, f"model_iter_{k}.pth")
         print(f"Retraining Model {next_model} on {final_dataset_path}...")
-        train_model(data_path=final_dataset_path, model_path=next_model, epochs=30)
+        train_model(data_path=final_dataset_path, model_path=next_model, epochs=10)
         
         current_model = next_model
         
