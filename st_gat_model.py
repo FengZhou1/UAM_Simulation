@@ -52,9 +52,11 @@ class GraphAttentionLayer(nn.Module):
             return h_prime
 
 class STGAT(nn.Module):
-    def __init__(self, nfeat, nhid, nclass, dropout, alpha, nheads):
+    def __init__(self, nfeat, nhid, nclass, n_nodes, dropout, alpha, nheads):
         super(STGAT, self).__init__()
         self.dropout = dropout
+        self.n_nodes = n_nodes
+        self.nhid = nhid
 
         # Spatial Graph Attention
         self.attentions = [GraphAttentionLayer(nfeat, nhid, dropout=dropout, alpha=alpha, concat=True) for _ in range(nheads)]
@@ -63,17 +65,24 @@ class STGAT(nn.Module):
 
         self.out_att = GraphAttentionLayer(nhid * nheads, nhid, dropout=dropout, alpha=alpha, concat=False)
         
-        # Temporal Processing (LSTM)
-        # Input to LSTM: (batch, seq_len, num_nodes * nhid) -> Flatten nodes? 
-        # Or shared LSTM per node? Let's do shared LSTM per node for scalability.
-        self.lstm = nn.LSTM(input_size=nhid, hidden_size=nhid, num_layers=1, batch_first=True)
+        # Temporal Processing (Centralized LSTM as per ref)
+        # Represents the global state evolution
+        # Input: Flattened state of all nodes [N * nhid] per time step
+        self.lstm_input_size = n_nodes * nhid
+        self.lstm_hidden_size = 128
+        
+        self.lstm1 = nn.LSTM(input_size=self.lstm_input_size, hidden_size=self.lstm_hidden_size, num_layers=1, batch_first=True)
+        self.lstm2 = nn.LSTM(input_size=self.lstm_hidden_size, hidden_size=256, num_layers=1, batch_first=True)
         
         # Output prediction
-        self.linear = nn.Linear(nhid, nclass)
+        # Map back from global hidden state to per-node prediction
+        self.linear = nn.Linear(256, n_nodes * nclass)
 
     def forward(self, x, adj):
         # x: (batch, seq_len, num_nodes, nfeat)
         batch_size, seq_len, num_nodes, nfeat = x.size()
+        
+        assert num_nodes == self.n_nodes, f"Input node count {num_nodes} does not match model node count {self.n_nodes}"
         
         # Process each time step through GAT
         # Flatten batch and seq_len for spatial processing
@@ -85,24 +94,24 @@ class STGAT(nn.Module):
         x_gat = self.out_att(x_gat, adj) # (B*T, N, nhid)
         x_gat = F.elu(x_gat)
         
-        # Reshape for Temporal
-        # We want to treat each node as a sequence
-        # (B, T, N, H) -> (B*N, T, H)
-        nhid = x_gat.size(-1)
-        x_seq = x_gat.view(batch_size, seq_len, num_nodes, nhid)
-        x_seq = x_seq.permute(0, 2, 1, 3).contiguous().view(batch_size * num_nodes, seq_len, nhid)
+        # Reshape for Centralized LSTM
+        # (B*T, N, nhid) -> (B, T, N, nhid) -> (B, T, N*nhid)
+        x_seq = x_gat.view(batch_size, seq_len, num_nodes, self.nhid)
+        x_flat = x_seq.view(batch_size, seq_len, num_nodes * self.nhid)
         
         # LSTM
-        lstm_out, _ = self.lstm(x_seq)
+        # (B, T, InputSize)
+        out1, _ = self.lstm1(x_flat)
+        out2, _ = self.lstm2(out1)
+        
         # Take last time step
-        last_out = lstm_out[:, -1, :] # (B*N, H)
+        last_out = out2[:, -1, :] # (B, Hidden2)
         
         # Prediction
-        # nclass needs to be stored or inferred
-        # We can use self.linear.out_features
-        out = self.linear(last_out) # (B*N, nclass)
-        # Assuming nclass is the output dimension
-        n_class = self.linear.out_features
+        out = self.linear(last_out) # (B, N*nclass)
+        
+        # Reshape to (Batch, N, nclass)
+        n_class = out.size(1) // num_nodes
         out = out.view(batch_size, num_nodes, n_class)
         
         return out

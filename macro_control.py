@@ -46,12 +46,15 @@ class STGATController:
                         self.feat_mean = checkpoint.get('feat_mean', np.zeros(2))
                         self.feat_std = checkpoint.get('feat_std', np.ones(2))
                         self.saved_adj = checkpoint.get('adj', None)
+                        num_nodes_model = len(self.airspace.graph.nodes())
+                        
                         if self.saved_adj is not None:
                              self.saved_adj = torch.FloatTensor(self.saved_adj).to(self.device)
+                             num_nodes_model = self.saved_adj.shape[0]
 
                         # Initialize Model (Must match training Params)
                         # Input: Density, AvgSoc -> 2 features
-                        self.model = STGAT(nfeat=2, nhid=64, nclass=1, dropout=0, alpha=0.2, nheads=4)
+                        self.model = STGAT(nfeat=2, nhid=64, nclass=1, n_nodes=num_nodes_model, dropout=0, alpha=0.2, nheads=4)
                         self.model.load_state_dict(checkpoint['model_state_dict'])
                         self.model.to(self.device)
                         self.model.eval()

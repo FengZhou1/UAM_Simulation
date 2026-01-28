@@ -18,7 +18,9 @@ class WindField:
         # Return scalar wind speed
         return 5.0
 
-def run_simulation(mode='guided', visualize=True, routing_policy='stgat', model_path=None, save_data=False, output_data='traffic_data.npy', seed=None, num_aircraft=40):
+import os 
+
+def run_simulation(mode='guided', visualize=True, routing_policy='stgat', model_path=None, save_data=False, output_data='traffic_data.npy', seed=None, num_aircraft=40, save_snapshots=True, snapshot_folder='snapshots'):
     # 配置日志
     logger = logging.getLogger('Simulation')
     # Clearing handlers to avoid duplicates in iterative runs
@@ -31,6 +33,10 @@ def run_simulation(mode='guided', visualize=True, routing_policy='stgat', model_
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.DEBUG
     )
+
+    if save_snapshots:
+        if not os.path.exists(snapshot_folder):
+            os.makedirs(snapshot_folder)
     
     if seed is not None:
         np.random.seed(seed)
@@ -83,8 +89,12 @@ def run_simulation(mode='guided', visualize=True, routing_policy='stgat', model_
     ac_trails = {}
     ac_targets = {}
 
-    if visualize:
-        plt.ion()
+    if visualize or save_snapshots:
+        if visualize:
+             plt.ion()
+        else:
+             plt.ioff() # Headless plotting if only snapshots
+             
         fig = plt.figure(figsize=(10, 10))
         ax = fig.add_subplot(111) # 2D 视图
         
@@ -159,8 +169,9 @@ def run_simulation(mode='guided', visualize=True, routing_policy='stgat', model_
                 target_scatter = ax.scatter([], [], c=[colors[i]], marker='*', s=100, edgecolors='black', linewidths=0.5)
                 ac_targets[ac.id] = target_scatter
         
-        print("Opening visualization window...")
-        plt.pause(0.5) # 给窗口一点时间弹出
+        if visualize:
+             print("Opening visualization window...")
+             plt.pause(0.5) # 给窗口一点时间弹出
 
     # 2. 时间循环 (Time Loop)
     t = 0
@@ -247,24 +258,30 @@ def run_simulation(mode='guided', visualize=True, routing_policy='stgat', model_
             # Or just rely on aircraft-level timeout implemented in aircraft.py
 
         # --- 实时更新绘图 ---
-        if visualize:
+        if visualize or save_snapshots:
             # 每 5 步更新一次画面 (0.5s)
             if t % 5 == 0:
                 try:
                     # 更新区域颜色 (Occupancy)
+                    max_cap = Config.SECTOR_CAPACITY
                     for rid, patch in region_patches.items():
                         occupancy = airspace.region_occupancy.get(rid, 0)
                         if occupancy > 0:
-                            # 简单的颜色映射: 1->Green, 2->Yellow, 3+->Red
-                            if occupancy <= 2:
+                            # 改进的颜色映射，基于容量比例
+                            # Green: low load, Yellow: medium, Red: high, Black: overloaded
+                            ratio = occupancy / max_cap
+                            if ratio <= 0.5:
                                 patch.set_facecolor('green')
                                 patch.set_alpha(0.3)
-                            elif occupancy <= 4:
+                            elif ratio <= 0.8:
                                 patch.set_facecolor('yellow')
                                 patch.set_alpha(0.4)
-                            else:
+                            elif ratio <= 1.0:
                                 patch.set_facecolor('red')
                                 patch.set_alpha(0.5)
+                            else:
+                                patch.set_facecolor('black')
+                                patch.set_alpha(0.6)
                         else:
                             patch.set_facecolor('none')
                             patch.set_alpha(0.1)
@@ -283,18 +300,22 @@ def run_simulation(mode='guided', visualize=True, routing_policy='stgat', model_
                             # 更新实时目标点
                             target = ac.get_target_waypoint()
                             ac_targets[ac.id].set_offsets(np.c_[target[0], target[1]])
+                    
+                    if visualize:
+                         plt.draw()
+                         plt.pause(0.01)
 
-                    plt.draw()
-                    plt.pause(0.05) # 增加暂停时间，让渲染更平滑可见
+                    # Snapshot logic
+                    if save_snapshots and t % 50 == 0: # Save every 50 steps (5 seconds)
+                         filename = f"{mode}_{routing_policy}_t{t:04d}.png"
+                         filepath = os.path.join(snapshot_folder, filename)
+                         plt.savefig(filepath)
+                         
                 except Exception as e:
                     logger.error(f"Plotting error: {e}")
             else:
-                # 在不绘图的帧，也刷新一下事件循环，防止窗口卡死
-                if t % 2 == 0: # 降低刷新频率
-                    fig.canvas.flush_events() 
-                # ac_targets[ac.id].set_offsets(np.c_[target[0], target[1]])
-
-
+                if visualize and t % 2 == 0:
+                     fig.canvas.flush_events() 
 
     # 3. 结果可视化
     print("Simulation finished.")
@@ -312,6 +333,8 @@ def run_simulation(mode='guided', visualize=True, routing_policy='stgat', model_
         plt.ioff()
         print("Close the visualization window to proceed..." if mode == 'guided' else "Close the visualization window to finish.")
         plt.show() # 保持窗口打开
+    elif save_snapshots:
+        plt.close(fig) # Clean up if headless
     
     # Save Data
     if save_data and len(data_buffer) > 0:

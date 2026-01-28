@@ -57,7 +57,8 @@ def train_model(data_path, model_path='stgat_model.pth', epochs=50):
     nhid = 64
     nclass = 1 # Regression: density
     
-    model = STGAT(nfeat, nhid, nclass, dropout=0.2, alpha=0.2, nheads=4).to(device)
+    # Must pass n_nodes for centralized LSTM (Architecture Update)
+    model = STGAT(nfeat, nhid, nclass, n_nodes=num_nodes, dropout=0.2, alpha=0.2, nheads=4).to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.005)
     criterion = nn.MSELoss()
     

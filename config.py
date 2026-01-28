@@ -28,7 +28,7 @@ class Config:
 
     # MFD 拥堵控制参数 (Eq. 3)
     # 这些参数通常通过拟合得到，这里使用经验值近似
-    N_CR = 10.0              # 临界累积量 (Critical Accumulation)
+    N_CR = 25.0              # 临界累积量 (Critical Accumulation)
     
     @staticmethod
     def get_congestion_speed(n_aircraft):

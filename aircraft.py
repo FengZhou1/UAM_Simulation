@@ -62,7 +62,8 @@ class Aircraft:
 
         # Timeout Check (防止仿真卡死)
         # 假设最大允许时间是预计时间的 3 倍或者固定值
-        if (current_time - self.start_time) > self.config.MAX_TIME * 0.8 and current_time > 0:
+        # 增加超时限制，因为4架飞机卡了很久
+        if (current_time - self.start_time) > self.config.MAX_TIME * 0.9 and current_time > 0:
              self.finished = True
              self.finish_time = current_time # Record timeout time
              logger.info(f"Aircraft {self.id} timed out at {current_time:.2f}s.")
@@ -70,6 +71,13 @@ class Aircraft:
 
         # Determine current region
         self.current_region_id = get_closest_region(self.pos, airspace.regions)
+        
+        # Deadlock/Stuck check
+        # 如果速度很慢且持续很长时间，尝试强制重规划或某种解脱措施
+        speed = np.linalg.norm(self.velocity)
+        if speed < 1.0 and not self.finished and neighbors:
+             # 可能卡在拥堵或死锁中
+             self.reroute_timer += dt * 5 # 加速重规划计时器
         
         # Initialize destination node if not set
         if self.destination_node == -1:

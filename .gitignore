@@ -4,3 +4,4 @@ __pycache__/
 *.log
 .vscode/
 training_artifacts/
+snapshots/
