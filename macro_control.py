@@ -1,5 +1,14 @@
 import numpy as np
 import math
+import os
+
+try:
+    import torch
+    from st_gat_model import STGAT
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    print("Warning: PyTorch not found. ST-GAT model will be disabled.")
 
 class STGATController:
     def __init__(self, airspace, config):
@@ -7,43 +16,121 @@ class STGATController:
         self.config = config
         self.static_capacity = config.SECTOR_CAPACITY
         
-        # ST-GAT 模型参数 (这里用简单的逻辑模拟预测，实际部署时替换为 torch model)
         self.prediction_horizon = 5 # 预测未来 5 个时间步
+        
+        # Load Model
+        self.model = None
+        self.history_buffer = [] # Store sequence of observations
+        self.max_history = 5
+        self.device = 'cpu'
+        
+        if TORCH_AVAILABLE:
+            self.device = torch.device('cpu')
+            
+            # Check for trained model
+            self.model_path = 'stgat_model.pth'
+            if os.path.exists(self.model_path):
+                try:
+                    checkpoint = torch.load(self.model_path)
+                    
+                    # Assume adj is static and saved with model or we reconstruct
+                    # For safety, let's load what was saved
+                    self.saved_adj = torch.FloatTensor(checkpoint['adj'])
+                    self.feat_mean = checkpoint['feat_mean']
+                    self.feat_std = checkpoint['feat_std']
+                    
+                    # Rebuild model structure (Hardcoded params must match training)
+                    nfeat = 2 # Density, Avg SOC
+                    nhid = 64
+                    nclass = 1
+                    self.model = STGAT(nfeat, nhid, nclass, dropout=0, alpha=0.2, nheads=4)
+                    self.model.load_state_dict(checkpoint['model_state_dict'])
+                    self.model.eval()
+                    print("ST-GAT Model loaded successfully.")
+                except Exception as e:
+                    print(f"Failed to load ST-GAT model: {e}")
+                    self.model = None
+            else:
+                print("No ST-GAT model found. Using fallback heuristic.")
+        else:
+             print("PyTorch not available. Using fallback heuristic.")
     
     def predict_sector_density(self, aircraft_list):
         """
         [Macro Layer 1]: 密度预测 (The Brain)
-        模拟 ST-GAT 的输出：基于当前趋势预测未来密度。
+        使用 ST-GAT 预测
         """
-        # 1. 统计当前密度
-        current_counts = {s_id: 0 for s_id in self.airspace.graph.nodes()} # Use graph nodes as sector/region IDs
-        avg_soc = {s_id: [] for s_id in self.airspace.graph.nodes()}
+        # 1. 统计当前状态 (Density, Avg SoC)
+        # Ensure node ordering matches adjacency matrix (Sorted by ID)
+        sorted_nodes = sorted(list(self.airspace.graph.nodes()))
+        node_to_idx = {node: i for i, node in enumerate(sorted_nodes)}
+        
+        current_counts = np.zeros(len(sorted_nodes))
+        current_socs = np.zeros(len(sorted_nodes))
+        
+        # Helper structures
+        temp_counts = {n: 0 for n in sorted_nodes}
+        temp_socs = {n: [] for n in sorted_nodes}
         
         for ac in aircraft_list:
             if not ac.finished:
-                # Use ac.current_region_id instead of get_sector_id based on position if available
-                # Or use airspace.get_sector_id(ac.pos)
-                current_sector = ac.current_region_id
-                if current_sector in current_counts:
-                    current_counts[current_sector] += 1
-                    avg_soc[current_sector].append(ac.battery_soc)
+                # Use ac.current_region_id
+                rid = ac.current_region_id
+                if rid in temp_counts:
+                    temp_counts[rid] += 1
+                    temp_socs[rid].append(ac.battery_soc)
         
-        # 2. 模拟 ST-GAT 预测 (加入惯性和波动)
-        # 在论文中，这里是: pred_y = Model(history_x, adj_matrix)
+        for i, rid in enumerate(sorted_nodes):
+            current_counts[i] = temp_counts[rid]
+            socs = temp_socs[rid]
+            current_socs[i] = sum(socs)/len(socs) if socs else 1.0
+            
+        # Construct feature vector: [Density, SoC]
+        current_features = np.stack([current_counts, current_socs], axis=1) # (N, 2)
+        
+        # Update History
+        self.history_buffer.append(current_features)
+        if len(self.history_buffer) > self.max_history:
+            self.history_buffer.pop(0)
+            
+        # 2. Predict
         pred_densities = {}
-        sector_states = {} # 存储用于计算阈值的状态
+        sector_states = {}
         
-        for s_id in self.airspace.graph.nodes():
-            # 简单模拟：假设未来密度会受当前流入趋势影响 (x 1.1) 加上随机波动
-            count = current_counts.get(s_id, 0)
-            pred = count * 1.1 + np.random.normal(0, 1)
-            pred_densities[s_id] = max(0, pred)
-            
-            # 计算该扇区机群的平均电量 (用于下一步的能量豁免)
-            socs = avg_soc.get(s_id, [])
-            mean_soc = sum(socs)/len(socs) if socs else 1.0
-            sector_states[s_id] = {'soc': mean_soc}
-            
+        # Populate basics first (fallback or for sectors mapping)
+        for i, rid in enumerate(sorted_nodes):
+            sector_states[rid] = {'soc': current_socs[i]}
+            # Default to current count if model fails
+            pred_densities[rid] = current_counts[i] 
+
+        # ST-GAT Inference
+        if self.model is not None and len(self.history_buffer) == self.max_history and TORCH_AVAILABLE:
+            with torch.no_grad():
+                # Prepare input
+                # (Batch=1, Seq=5, Nodes=N, Feat=2)
+                x_seq = np.array(self.history_buffer) #(T, N, F)
+                
+                # Normalize
+                x_seq = (x_seq - self.feat_mean) / (self.feat_std + 1e-5)
+                
+                x_tensor = torch.FloatTensor(x_seq).unsqueeze(0)
+                
+                # Run Model
+                # Need to use the Adjacency matrix the model was trained with
+                # Or the current graph adj? Ideally they are same topology.
+                adj = self.saved_adj 
+                
+                output = self.model(x_tensor, adj) # (1, N, 1)
+                pred_vals = output.squeeze().numpy()
+                
+                # De-normalize? Assuming target was also normalized? 
+                # In training: Y = features[..., 0]. Normalized.
+                # So we must denormalize density
+                pred_vals = pred_vals * (self.feat_std[0] + 1e-5) + self.feat_mean[0]
+                
+                for i, rid in enumerate(sorted_nodes):
+                    pred_densities[rid] = max(0, pred_vals[i])
+        
         return pred_densities, sector_states
 
     def update_airspace_costs(self, aircraft_list, wind_field):

@@ -4,6 +4,7 @@ import logging
 from config import Config
 import networkx as nx
 from utils import get_closest_region, dist
+from collision_avoidance import CollisionAvoidance
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ class Aircraft:
             return self.path_waypoints[self.current_wp_index]
         return self.destination
 
-    def update(self, dt, airspace):
+    def update(self, dt, airspace, neighbors=None):
         """
         Modified update loop integrating Physics, Battery and Micro-Path Planning
         """
@@ -67,17 +68,13 @@ class Aircraft:
             self.plan_path(airspace)
             self.reroute_timer = 0
 
-        # 2. 路径执行 (Calculate v_command)
-        target = self.get_target_waypoint()
-        
-        # Simple P-controller for velocity command (direction * max_speed)
-        direction = target - self.pos
-        dist_to_target = np.linalg.norm(direction)
-        
-        if dist_to_target > 0:
-            v_command = (direction / dist_to_target) * self.config.MAX_SPEED
-        else:
-            v_command = np.zeros(3)
+        # 2. 路径执行 & 避障 (Calculate v_command)
+        if neighbors is None:
+            neighbors = []
+            
+        # Use CollisionAvoidance module to compute velocity
+        # This encapsulates the "Guidance" (Preferred Velocity) + "avoidance"
+        v_command = CollisionAvoidance.compute_velocity_command(self, neighbors)
             
         # Call physics update
         self.update_state(v_command)

@@ -151,6 +151,9 @@ def run_simulation(mode='guided', visualize=True):
     max_steps = int(Config.MAX_TIME / Config.DT)
     macro_update_steps = int(Config.MACRO_INTERVAL / Config.DT)
     
+    # --- Data Collection Buffer ---
+    data_buffer = [] # To store list of (Density, SoC) vectors
+    
     while t < max_steps: # 运行直到完成或超时
         current_time = t * Config.DT
         t += 1
@@ -166,6 +169,29 @@ def run_simulation(mode='guided', visualize=True):
         airspace.update_occupancy(active_aircraft)
         # ac.current_region_id is updated inside ac.update() now
         
+        # --- Data Collection Logic ---
+        if mode == 'data_collection' and t % macro_update_steps == 0:
+            sorted_nodes = sorted(list(airspace.graph.nodes()))
+            current_counts = np.zeros(len(sorted_nodes))
+            current_socs = np.zeros(len(sorted_nodes))
+            temp_counts = {n: 0 for n in sorted_nodes}
+            temp_socs = {n: [] for n in sorted_nodes}
+             
+            for ac in active_aircraft:
+                 rid = ac.current_region_id
+                 if rid in temp_counts:
+                     temp_counts[rid] += 1
+                     temp_socs[rid].append(ac.battery_soc)
+            
+            for i, rid in enumerate(sorted_nodes):
+                current_counts[i] = temp_counts[rid]
+                socs = temp_socs[rid]
+                current_socs[i] = sum(socs)/len(socs) if socs else 1.0
+            
+            # Feature vector: [Density, SoC]
+            frame_feats = np.stack([current_counts, current_socs], axis=1) # (N, 2)
+            data_buffer.append(frame_feats)
+        
         # --- 1. 宏观控制层 (Macro) ---
         if t % macro_update_steps == 0:
             pred_map = macro_controller.update_airspace_costs(active_aircraft, wind_field)
@@ -173,7 +199,13 @@ def run_simulation(mode='guided', visualize=True):
 
         # --- 2. 微观执行层 (Micro) ---
         for ac in active_aircraft:
-            ac.update(Config.DT, airspace)
+            # 寻找邻居 (Simple pairwise check)
+            neighbors = []
+            for other in active_aircraft:
+                if ac.id != other.id and np.linalg.norm(ac.pos - other.pos) < Config.DETECTION_RADIUS:
+                    neighbors.append(other)
+            
+            ac.update(Config.DT, airspace, neighbors)
             history_pos[ac.id].append(ac.pos.copy())
             
         if t % 200 == 0:
@@ -245,6 +277,21 @@ def run_simulation(mode='guided', visualize=True):
         print("Close the visualization window to proceed..." if mode == 'guided' else "Close the visualization window to finish.")
         plt.show() # 保持窗口打开
     
+    # Save Data
+    if mode == 'data_collection' and len(data_buffer) > 0:
+        print(f"Saving collected data: {len(data_buffer)} frames.")
+        # Need adjacency matrix too
+        adj = nx.adjacency_matrix(airspace.graph, weight=None).todense()
+        # Ensure node ordering matches sorted(nodes) used in collection
+        sorted_nodes = sorted(list(airspace.graph.nodes()))
+        adj = nx.to_numpy_array(airspace.graph, nodelist=sorted_nodes, weight=None)
+        
+        np.save('traffic_data.npy', {
+            'features': np.array(data_buffer), # (T, N, F)
+            'adj': adj 
+        })
+        print("Data saved to traffic_data.npy")
+
     return {
         "mode": mode,
         "finished_count": len(finished_aircraft),
@@ -253,19 +300,31 @@ def run_simulation(mode='guided', visualize=True):
     }
 
 if __name__ == "__main__":
+    import sys
+    
+    # Simple CLI argument parser
+    MODE = 'guided'
+    if len(sys.argv) > 1:
+        MODE = sys.argv[1]
+
     # 可视化开关
     VISUALIZE = True
-
-    print("Starting Comparison: Guided vs Free Flight")
-    print("------------------------------------------")
-    
-    print("\nRunning Guided Mode...")
-    metrics_guided = run_simulation(mode='guided', visualize=VISUALIZE)
-    
-    print("\nRunning Free Flight Mode...")
-    metrics_free = run_simulation(mode='free', visualize=VISUALIZE)
-    
-    print("\n=== Comparison Results ===")
+    if MODE == 'data_collection':
+        VISUALIZE = False
+        print("Starting Data Collection Run...")
+        metrics = run_simulation(mode='data_collection', visualize=False)
+    else:
+        print("Starting Comparison: Guided vs Free Flight")
+        print("------------------------------------------")
+        
+        print("\nRunning Guided Mode...")
+        metrics_guided = run_simulation(mode='guided', visualize=VISUALIZE)
+        
+        # print("\nRunning Free Flight Mode...")
+        # metrics_free = run_simulation(mode='free', visualize=VISUALIZE)
+        
+        print("\n=== Comparison Results ===")
+        # ...
     print(f"{'Metric':<20} | {'Guided':<15} | {'Free Flight':<15}")
     print("-" * 56)
     print(f"{'Finished Aircraft':<20} | {metrics_guided['finished_count']}/{metrics_guided['total_count']:<13} | {metrics_free['finished_count']}/{metrics_free['total_count']:<13}")
