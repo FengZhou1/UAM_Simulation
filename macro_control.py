@@ -40,7 +40,7 @@ class STGATController:
             if model_path is not None or os.path.exists(self.model_path):
                 if os.path.exists(self.model_path):
                     try:
-                        checkpoint = torch.load(self.model_path, map_location=self.device)
+                        checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
                         
                         # Saved metadata
                         self.feat_mean = checkpoint.get('feat_mean', np.zeros(2))
@@ -59,7 +59,6 @@ class STGATController:
                     except Exception as e:
                         print(f"Failed to load ST-GAT model: {e}")
                         self.model = None
-                    self.model = None
             else:
                  print(f"Model file {self.model_path} not found. Running in Data Collection / Heuristic Mode.")
     

@@ -1,1 +1,2 @@
-stgat_model.pth
+*.pth
+*.npy

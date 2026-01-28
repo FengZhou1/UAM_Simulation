@@ -35,59 +35,81 @@ def merge_datasets(file_list, output_path):
     print(f"Merged dataset saved. Total frames: {combined_features.shape[0]}")
     return True
 
-def dagger_loop(rounds=3):
-    # Phase 0: Warmup
-    print("=== DAgger Phase 0: Warmup (Random/Heuristic w/o Model) ===")
-    # Run simulation without model (using heuristic fallback in controller)
-    # Collect initial data
-    d0_path = "data_iter_0.npy"
-    m0_path = "model_iter_0.pth"
+def dagger_loop(rounds=3, episodes_per_round=3):
+    # Setup artifact directory
+    artifact_dir = "training_artifacts"
+    if not os.path.exists(artifact_dir):
+        os.makedirs(artifact_dir)
+        
+    print(f"=== DAgger Phase 0: Warmup (Random/Heuristic w/o Model) ===")
     
-    # 0. Clean up previous
-    if os.path.exists(d0_path): os.remove(d0_path)
+    current_data_files = []
     
-    # 1. Run Simulation
-    print(f"Running simulation to generate {d0_path}...")
-    run_simulation(mode='guided', visualize=False, routing_policy='stgat', 
-                   model_path="heuristic_v0", # No model -> Heuristic
-                   save_data=True, output_data=d0_path)
+    # Run multiple episodes for warmup
+    for ep in range(episodes_per_round):
+        output_file = os.path.join(artifact_dir, f"data_phase0_ep{ep}.npy")
+        current_data_files.append(output_file)
+        
+        # Vary seed: Base seed + episode index
+        seed = 1000 + ep 
+        print(f"  -> Episode {ep+1}/{episodes_per_round} (Seed: {seed})")
+        
+        run_simulation(mode='guided', visualize=False, routing_policy='stgat', 
+                       model_path="heuristic_v0", 
+                       save_data=True, output_data=output_file,
+                       seed=seed, num_aircraft=np.random.randint(30, 50)) # Randomize density slightly
+
+    m0_path = os.path.join(artifact_dir, "model_iter_0.pth")
+    agg_data_path = os.path.join(artifact_dir, "data_phase0_agg.npy")
     
-    # 2. Train Initial Model
-    if os.path.exists(d0_path):
+    # Merge Phase 0 data
+    if merge_datasets(current_data_files, agg_data_path):
         print("Training Model M0...")
-        train_model(data_path=d0_path, model_path=m0_path, epochs=10) 
+        train_model(data_path=agg_data_path, model_path=m0_path, epochs=30)
     else:
         print("Error: Phase 0 data generation failed.")
         return
 
     current_model = m0_path
-    data_files = [d0_path]
+    all_data_files = [agg_data_path] # Keep track of aggregated files
     
     # Iterative Phase
     for k in range(1, rounds + 1):
         print(f"\n=== DAgger Phase {k}: Self-Play & Aggregation ===")
         
-        # 1. Run Simulation with current model
-        new_data_path = f"data_iter_{k}.npy"
-        print(f"Running simulation with {current_model} to generate {new_data_path}...")
+        phase_files = []
+        for ep in range(episodes_per_round):
+            output_file = os.path.join(artifact_dir, f"data_phase{k}_ep{ep}.npy")
+            phase_files.append(output_file)
+            
+            # Vary seed
+            seed = 1000 + (k * 10) + ep
+            print(f"  -> Episode {ep+1}/{episodes_per_round} (Seed: {seed})")
+            
+            run_simulation(mode='guided', visualize=False, routing_policy='stgat',
+                           model_path=current_model,
+                           save_data=True, output_data=output_file,
+                           seed=seed, num_aircraft=np.random.randint(30, 50))
         
-        run_simulation(mode='guided', visualize=False, routing_policy='stgat',
-                       model_path=current_model,
-                       save_data=True, output_data=new_data_path)
+        # Merge new data first (optional, but good for tracking)
+        phase_agg_path = os.path.join(artifact_dir, f"data_phase{k}_agg.npy")
+        merge_datasets(phase_files, phase_agg_path)
         
-        # 2. Key Step: Aggregate Data
-        data_files.append(new_data_path)
-        agg_data_path = f"data_agg_{k}.npy"
-        success = merge_datasets(data_files, agg_data_path)
+        # Add to global list
+        all_data_files.append(phase_agg_path)
+        
+        # Create Grand Master Dataset for training
+        final_dataset_path = os.path.join(artifact_dir, f"data_grand_iter_{k}.npy")
+        success = merge_datasets(all_data_files, final_dataset_path)
         
         if not success:
             print("Aggregation failed. Stopping.")
             break
 
         # 3. Retrain on Aggregated Data
-        next_model = f"model_iter_{k}.pth"
-        print(f"Retraining Model {next_model} on {agg_data_path}...")
-        train_model(data_path=agg_data_path, model_path=next_model, epochs=30)
+        next_model = os.path.join(artifact_dir, f"model_iter_{k}.pth")
+        print(f"Retraining Model {next_model} on {final_dataset_path}...")
+        train_model(data_path=final_dataset_path, model_path=next_model, epochs=30)
         
         current_model = next_model
         
@@ -100,6 +122,4 @@ def dagger_loop(rounds=3):
         print("Updated default 'stgat_model.pth' with final model.")
 
 if __name__ == "__main__":
-    # You can set visualize=True in run_simulation inside the loop if you want to watch,
-    # but for training speed it is set to False.
-    dagger_loop(rounds=3)
+    dagger_loop(rounds=3, episodes_per_round=3)

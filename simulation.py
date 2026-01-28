@@ -18,7 +18,7 @@ class WindField:
         # Return scalar wind speed
         return 5.0
 
-def run_simulation(mode='guided', visualize=True, routing_policy='stgat', model_path=None, save_data=False, output_data='traffic_data.npy'):
+def run_simulation(mode='guided', visualize=True, routing_policy='stgat', model_path=None, save_data=False, output_data='traffic_data.npy', seed=None, num_aircraft=40):
     # 配置日志
     logger = logging.getLogger('Simulation')
     # Clearing handlers to avoid duplicates in iterative runs
@@ -32,8 +32,12 @@ def run_simulation(mode='guided', visualize=True, routing_policy='stgat', model_
         level=logging.DEBUG
     )
     
+    if seed is not None:
+        np.random.seed(seed)
+        print(f"Random Seed set to: {seed}")
+    
     logger.info(f"Starting Simulation in {mode} mode with policy {routing_policy}...")
-    print(f"Starting Simulation in {mode} mode with policy {routing_policy}. Model: {model_path}")
+    print(f"Starting Simulation in {mode} mode with policy {routing_policy}. Model: {model_path}. Seed: {seed}")
 
     # 1. 初始化 (Initialize)
     logger.info("Initializing Airspace...")
@@ -49,18 +53,23 @@ def run_simulation(mode='guided', visualize=True, routing_policy='stgat', model_
     aircraft_list = []
     
     # 场景生成：两组主要航线
-    # Group 1: 左 -> 右 (20架)
-    for i in range(20):
-        start = [np.random.uniform(-1500, -1100), np.random.uniform(-400, 400), 400]
-        end = [np.random.uniform(1100, 1500), np.random.uniform(-400, 400), 400]
+    # 根据总数分配两组数量
+    n_g1 = num_aircraft // 2
+    n_g2 = num_aircraft - n_g1
+    
+    # Group 1: 左 -> 右
+    for i in range(n_g1):
+        # 增加起始区域的随机性 (-2000 ~ -1000)
+        start = [np.random.uniform(-1800, -800), np.random.uniform(-600, 600), 400]
+        end = [np.random.uniform(800, 1800), np.random.uniform(-600, 600), 400]
         # Update Aircraft init with Config
         aircraft_list.append(Aircraft(i+1, start, end, 0, Config))
         
-    # Group 2: 上 -> 下 (20架)
-    for i in range(20):
-        start = [np.random.uniform(-400, 400), np.random.uniform(1100, 1500), 400]
-        end = [np.random.uniform(-400, 400), np.random.uniform(-1500, -1100), 400]
-        aircraft_list.append(Aircraft(i+21, start, end, 0, Config))
+    # Group 2: 上 -> 下
+    for i in range(n_g2):
+        start = [np.random.uniform(-600, 600), np.random.uniform(800, 1800), 400]
+        end = [np.random.uniform(-600, 600), np.random.uniform(-1800, -800), 400]
+        aircraft_list.append(Aircraft(i+n_g1+1, start, end, 0, Config))
 
     # 数据记录
     history_pos = {ac.id: [] for ac in aircraft_list}
