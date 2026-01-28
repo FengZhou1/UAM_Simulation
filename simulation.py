@@ -18,17 +18,22 @@ class WindField:
         # Return scalar wind speed
         return 5.0
 
-def run_simulation(mode='guided', visualize=True, routing_policy='stgat'):
+def run_simulation(mode='guided', visualize=True, routing_policy='stgat', model_path=None, save_data=False, output_data='traffic_data.npy'):
     # 配置日志
+    logger = logging.getLogger('Simulation')
+    # Clearing handlers to avoid duplicates in iterative runs
+    if logger.hasHandlers():
+        logger.handlers.clear()
+        
     logging.basicConfig(
         filename='simulation.log',
         filemode='w',
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.DEBUG
     )
-    logger = logging.getLogger('Simulation')
+    
     logger.info(f"Starting Simulation in {mode} mode with policy {routing_policy}...")
-    print(f"Starting Simulation in {mode} mode with policy {routing_policy}...")
+    print(f"Starting Simulation in {mode} mode with policy {routing_policy}. Model: {model_path}")
 
     # 1. 初始化 (Initialize)
     logger.info("Initializing Airspace...")
@@ -37,7 +42,8 @@ def run_simulation(mode='guided', visualize=True, routing_policy='stgat'):
     # rg_module = RouteGuidance(airspace) # Removed
     
     # Init Macro Controller
-    macro_controller = STGATController(airspace, Config)
+    # Pass model_path explicitly
+    macro_controller = STGATController(airspace, Config, model_path=model_path)
     wind_field = WindField()
     
     aircraft_list = []
@@ -171,7 +177,9 @@ def run_simulation(mode='guided', visualize=True, routing_policy='stgat'):
         # ac.current_region_id is updated inside ac.update() now
         
         # --- Data Collection Logic ---
-        if mode == 'data_collection' and t % macro_update_steps == 0:
+        # Collect data every 1 second (10 steps) to ensure sufficient training data
+        collection_interval = int(1.0 / Config.DT)
+        if save_data and t % collection_interval == 0:
             sorted_nodes = sorted(list(airspace.graph.nodes()))
             current_counts = np.zeros(len(sorted_nodes))
             current_socs = np.zeros(len(sorted_nodes))
@@ -192,8 +200,8 @@ def run_simulation(mode='guided', visualize=True, routing_policy='stgat'):
             # Feature vector: [Density, SoC]
             frame_feats = np.stack([current_counts, current_socs], axis=1) # (N, 2)
             data_buffer.append(frame_feats)
-            if len(data_buffer) % 10 == 0:
-                print(f"Collected {len(data_buffer)} frames of data...")
+            # if len(data_buffer) % 10 == 0:
+            #    print(f"Collected {len(data_buffer)} frames of data...")
         
         # --- 1. 宏观控制层 (Macro) ---
         if t % macro_update_steps == 0:
@@ -297,19 +305,19 @@ def run_simulation(mode='guided', visualize=True, routing_policy='stgat'):
         plt.show() # 保持窗口打开
     
     # Save Data
-    if mode == 'data_collection' and len(data_buffer) > 0:
-        print(f"Saving collected data: {len(data_buffer)} frames.")
+    if save_data and len(data_buffer) > 0:
+        print(f"Saving collected data: {len(data_buffer)} frames to {output_data}")
         # Need adjacency matrix too
         adj = nx.adjacency_matrix(airspace.graph, weight=None).todense()
         # Ensure node ordering matches sorted(nodes) used in collection
         sorted_nodes = sorted(list(airspace.graph.nodes()))
         adj = nx.to_numpy_array(airspace.graph, nodelist=sorted_nodes, weight=None)
         
-        np.save('traffic_data.npy', {
+        np.save(output_data, {
             'features': np.array(data_buffer), # (T, N, F)
             'adj': adj 
         })
-        print("Data saved to traffic_data.npy")
+        print(f"Data saved to {output_data}")
 
     return {
         "mode": mode,

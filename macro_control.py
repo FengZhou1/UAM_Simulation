@@ -11,7 +11,7 @@ except ImportError:
     print("Warning: PyTorch not found. ST-GAT model will be disabled.")
 
 class STGATController:
-    def __init__(self, airspace, config):
+    def __init__(self, airspace, config, model_path=None):
         self.airspace = airspace
         self.config = config
         self.static_capacity = config.SECTOR_CAPACITY
@@ -27,27 +27,38 @@ class STGATController:
         self.device = torch.device('cuda' if (TORCH_AVAILABLE and torch.cuda.is_available()) else 'cpu')
         
         if TORCH_AVAILABLE:
-            self.model_path = 'stgat_model.pth'
-            if os.path.exists(self.model_path):
-                try:
-                    checkpoint = torch.load(self.model_path, map_location=self.device)
-                    
-                    # Saved metadata
-                    self.feat_mean = checkpoint.get('feat_mean', np.zeros(2))
-                    self.feat_std = checkpoint.get('feat_std', np.ones(2))
-                    self.saved_adj = checkpoint.get('adj', None)
-                    if self.saved_adj is not None:
-                         self.saved_adj = torch.FloatTensor(self.saved_adj).to(self.device)
+            # Use provided path or default if not specified but don't force 'stgat_model.pth' unless it exists
+            # Logic: If model_path provided, use it. If None, try finding default. If neither, mode is "heuristic".
+            # For DAgger warmup, we might pass model_path=None explicitly to ensure no model is loaded.
+            
+            if model_path:
+                self.model_path = model_path
+            else:
+                self.model_path = 'stgat_model.pth' # Fallback default
+            
+            # Check if we should try loading
+            if model_path is not None or os.path.exists(self.model_path):
+                if os.path.exists(self.model_path):
+                    try:
+                        checkpoint = torch.load(self.model_path, map_location=self.device)
+                        
+                        # Saved metadata
+                        self.feat_mean = checkpoint.get('feat_mean', np.zeros(2))
+                        self.feat_std = checkpoint.get('feat_std', np.ones(2))
+                        self.saved_adj = checkpoint.get('adj', None)
+                        if self.saved_adj is not None:
+                             self.saved_adj = torch.FloatTensor(self.saved_adj).to(self.device)
 
-                    # Initialize Model (Must match training Params)
-                    # Input: Density, AvgSoc -> 2 features
-                    self.model = STGAT(nfeat=2, nhid=64, nclass=1, dropout=0, alpha=0.2, nheads=4)
-                    self.model.load_state_dict(checkpoint['model_state_dict'])
-                    self.model.to(self.device)
-                    self.model.eval()
-                    print(f"ST-GAT Model loaded from {self.model_path} on {self.device}")
-                except Exception as e:
-                    print(f"Failed to load ST-GAT model: {e}")
+                        # Initialize Model (Must match training Params)
+                        # Input: Density, AvgSoc -> 2 features
+                        self.model = STGAT(nfeat=2, nhid=64, nclass=1, dropout=0, alpha=0.2, nheads=4)
+                        self.model.load_state_dict(checkpoint['model_state_dict'])
+                        self.model.to(self.device)
+                        self.model.eval()
+                        print(f"ST-GAT Model loaded from {self.model_path} on {self.device}")
+                    except Exception as e:
+                        print(f"Failed to load ST-GAT model: {e}")
+                        self.model = None
                     self.model = None
             else:
                  print(f"Model file {self.model_path} not found. Running in Data Collection / Heuristic Mode.")
