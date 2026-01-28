@@ -19,10 +19,10 @@ class Config:
     MAX_CANDIDATE_PATHS = 6  # 每个OD对的最大候选路径数
     
     # ST-GAT Parameters
-    SECTOR_CAPACITY = 5      # 扇区容量 (static capacity)
+    SECTOR_CAPACITY = 10     # 扇区容量 (增加容量防止初期拥堵过死)
     BASE_COST = 10.0         # 基础通行成本
-    HOVER_DISCHARGE_RATE = 0.05 # 悬停耗电率 (/s)
-    CRUISE_DISCHARGE_RATE = 0.02 # 巡航耗电率 (/s)
+    HOVER_DISCHARGE_RATE = 0.0005 # 悬停耗电率 (/s) -> 约 33 分钟续航
+    CRUISE_DISCHARGE_RATE = 0.0003 # 巡航耗电率 (/s) -> 约 55 分钟续航
     REROUTE_INTERVAL = 30.0  # 微观重规划间隔 (s)
     MACRO_INTERVAL = 60.0    # 宏观调控间隔 (s)
 

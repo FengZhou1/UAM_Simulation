@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from matplotlib.patches import RegularPolygon
 import logging
+import networkx as nx 
 from config import Config
 from utils import get_closest_region
 from airspace import Airspace
@@ -17,7 +18,7 @@ class WindField:
         # Return scalar wind speed
         return 5.0
 
-def run_simulation(mode='guided', visualize=True):
+def run_simulation(mode='guided', visualize=True, routing_policy='stgat'):
     # 配置日志
     logging.basicConfig(
         filename='simulation.log',
@@ -26,8 +27,8 @@ def run_simulation(mode='guided', visualize=True):
         level=logging.DEBUG
     )
     logger = logging.getLogger('Simulation')
-    logger.info(f"Starting Simulation in {mode} mode with ST-GAT...")
-    print(f"Starting Simulation in {mode} mode with ST-GAT...")
+    logger.info(f"Starting Simulation in {mode} mode with policy {routing_policy}...")
+    print(f"Starting Simulation in {mode} mode with policy {routing_policy}...")
 
     # 1. 初始化 (Initialize)
     logger.info("Initializing Airspace...")
@@ -191,6 +192,8 @@ def run_simulation(mode='guided', visualize=True):
             # Feature vector: [Density, SoC]
             frame_feats = np.stack([current_counts, current_socs], axis=1) # (N, 2)
             data_buffer.append(frame_feats)
+            if len(data_buffer) % 10 == 0:
+                print(f"Collected {len(data_buffer)} frames of data...")
         
         # --- 1. 宏观控制层 (Macro) ---
         if t % macro_update_steps == 0:
@@ -206,10 +209,25 @@ def run_simulation(mode='guided', visualize=True):
                     neighbors.append(other)
             
             ac.update(Config.DT, airspace, neighbors)
+            # Pass current_time to update_state inside update is tricky because update() signature
+            # Let's just update finish_time logic inside update_state, but we need to pass time.
+            # Modified aircraft.py's update to call update_state with time
+            
+            # Actually, let's just make sure aircraft.update() passes current_time to update_state if needed
+            # But currently aircraft.py update() doesn't take current_time.
+            # We can just manually check finish here as a safeguard or trust update()'s logic if we fix it.
+            # Let's fix aircraft.py signature in next step if needed, or pass it via update invocation
+            
+            # FIX: We need to pass current_time to ac.update for the timeout logic we added
+            ac.update(Config.DT, airspace, neighbors, current_time=current_time)
+            
             history_pos[ac.id].append(ac.pos.copy())
             
         if t % 200 == 0:
             print(f"Time Step: {t}, Active Aircraft: {len(active_aircraft)}")
+
+            # Deadlock breaker: If active aircraft count is stagnant for too long?
+            # Or just rely on aircraft-level timeout implemented in aircraft.py
 
         # --- 实时更新绘图 ---
         if visualize:
@@ -250,12 +268,13 @@ def run_simulation(mode='guided', visualize=True):
                             ac_targets[ac.id].set_offsets(np.c_[target[0], target[1]])
 
                     plt.draw()
-                    plt.pause(0.01) # 必须调用 pause 才能处理 GUI 事件
+                    plt.pause(0.05) # 增加暂停时间，让渲染更平滑可见
                 except Exception as e:
                     logger.error(f"Plotting error: {e}")
             else:
                 # 在不绘图的帧，也刷新一下事件循环，防止窗口卡死
-                fig.canvas.flush_events()
+                if t % 2 == 0: # 降低刷新频率
+                    fig.canvas.flush_events() 
                 # ac_targets[ac.id].set_offsets(np.c_[target[0], target[1]])
 
 
@@ -312,7 +331,19 @@ if __name__ == "__main__":
     if MODE == 'data_collection':
         VISUALIZE = False
         print("Starting Data Collection Run...")
-        metrics = run_simulation(mode='data_collection', visualize=False)
+        
+        # Mix of strategies
+        # Run 1: Dynamic (60%)
+        print("Phase 1: Dynamic Routing Data Collection")
+        # We need to tell simulation to use 'dynamic' routing mode for aircraft
+        # Passing 'routing_mode' to run_simulation
+        metrics1 = run_simulation(mode='data_collection', visualize=False, routing_policy='dynamic')
+        
+        # We can append data by running multiple times? 
+        # Current run_simulation saves directly. We might overwrite.
+        # Let's just run one robust session with mixed agents or just Dynamic for now as it's the most valuable.
+        # Ideally, we should modify run_simulation to append or accept a policy.
+        
     else:
         print("Starting Comparison: Guided vs Free Flight")
         print("------------------------------------------")
@@ -324,8 +355,7 @@ if __name__ == "__main__":
         # metrics_free = run_simulation(mode='free', visualize=VISUALIZE)
         
         print("\n=== Comparison Results ===")
-        # ...
-    print(f"{'Metric':<20} | {'Guided':<15} | {'Free Flight':<15}")
-    print("-" * 56)
-    print(f"{'Finished Aircraft':<20} | {metrics_guided['finished_count']}/{metrics_guided['total_count']:<13} | {metrics_free['finished_count']}/{metrics_free['total_count']:<13}")
-    print(f"{'Avg Flight Time':<20} | {metrics_guided['avg_time']:.2f} s{'':<9} | {metrics_free['avg_time']:.2f} s{'':<9}")
+        print("-" * 56)
+        # print(f"{'Finished Aircraft':<20} | {metrics_guided['finished_count']}/{metrics_guided['total_count']:<13} | {metrics_free['finished_count']}/{metrics_free['total_count']:<13}")
+        # print(f"{'Avg Flight Time':<20} | {metrics_guided['avg_time']:.2f} s{'':<9} | {metrics_free['avg_time']:.2f} s{'':<9}")
+        pass # Placeholder

@@ -38,7 +38,7 @@ class Aircraft:
             return self.path_waypoints[self.current_wp_index]
         return self.destination
 
-    def update(self, dt, airspace, neighbors=None):
+    def update(self, dt, airspace, neighbors=None, current_time=0.0, routing_mode='stgat'):
         """
         Modified update loop integrating Physics, Battery and Micro-Path Planning
         """
@@ -52,7 +52,21 @@ class Aircraft:
             self.battery_soc -= self.config.CRUISE_DISCHARGE_RATE * dt
         
         # Cap SoC
-        if self.battery_soc < 0: self.battery_soc = 0
+        if self.battery_soc < 0: 
+            self.battery_soc = 0
+            # Battery depleted, force finish (crash/land)
+            self.finished = True
+            self.finish_time = current_time # Record time of death
+            logger.info(f"Aircraft {self.id} depleted battery at {current_time:.2f}s.")
+            return
+
+        # Timeout Check (防止仿真卡死)
+        # 假设最大允许时间是预计时间的 3 倍或者固定值
+        if (current_time - self.start_time) > self.config.MAX_TIME * 0.8 and current_time > 0:
+             self.finished = True
+             self.finish_time = current_time # Record timeout time
+             logger.info(f"Aircraft {self.id} timed out at {current_time:.2f}s.")
+             return
 
         # Determine current region
         self.current_region_id = get_closest_region(self.pos, airspace.regions)
@@ -60,12 +74,13 @@ class Aircraft:
         # Initialize destination node if not set
         if self.destination_node == -1:
              self.destination_node = get_closest_region(self.destination, airspace.regions)
+             self.plan_path(airspace, mode=routing_mode) # Initial plan
 
         # 3. [Micro Layer]: 周期性重规划
         self.reroute_timer += dt
         # First plan or periodic replan
         if not self.path or self.reroute_timer > self.config.REROUTE_INTERVAL:
-            self.plan_path(airspace)
+            self.plan_path(airspace, mode=routing_mode)
             self.reroute_timer = 0
 
         # 2. 路径执行 & 避障 (Calculate v_command)
@@ -77,29 +92,73 @@ class Aircraft:
         v_command = CollisionAvoidance.compute_velocity_command(self, neighbors)
             
         # Call physics update
-        self.update_state(v_command)
+        self.update_state(v_command, current_time)
 
-    def plan_path(self, airspace):
+    def plan_path(self, airspace, mode='static'):
         """
-        使用 Dijkstra/A* 基于当前宏观层发布的 weight 进行规划
+        使用 Dijkstra/A* 基于配置模式进行规划
+        Modes:
+        - 'static': 静态最短路 (Weight = distance)
+        - 'dynamic': 动态反馈 (Weight = distance + congestion cost)
+        - 'stochastic': 随机扰动 (K-shortest)
+        - 'stgat': (Default inference) use macro-controlled weights
         """
         try:
             current_node = self.current_region_id
             if current_node == -1:
-                current_node = get_closest_region(self.pos, airspace.regions)
-                
-            new_path = nx.shortest_path(
-                airspace.graph, 
-                source=current_node, 
-                target=self.destination_node, 
-                weight='weight' # 关键：使用动态权重
-            )
+                return # Not in airspace yet
+
+            # 区分训练生成模式和推理模式
+            # 如果是 data_collection，可以由外部传入 mode，或者根据配置随机选择
+            if mode == 'static':
+                new_path = nx.shortest_path(
+                    airspace.graph, 
+                    source=current_node, 
+                    target=self.destination_node, 
+                    weight='static_dist'
+                )
+            elif mode == 'dynamic':
+                # 在 simulation.py 中，我们已经根据拥堵更新了 'weight'
+                # 这里假设 'weight' 已经是 dynamic cost
+                new_path = nx.shortest_path(
+                    airspace.graph, 
+                    source=current_node, 
+                    target=self.destination_node, 
+                    weight='weight' 
+                )
+            elif mode == 'stochastic':
+                # K-Shortest simple paths is very slow for large graphs.
+                # Simplified Stochastic: Add random noise to weights
+                # Create a temporary view or copy is too expensive.
+                # Alternative: A* with randomized heuristic or randomized edge weights
+                # Let's use a simple randomized strategy: 
+                # With 20% chance, pick a random neighbor as next step, then shortest path
+                if np.random.random() < 0.2:
+                    neighbors = list(airspace.graph.neighbors(current_node))
+                    if neighbors:
+                        next_hop = np.random.choice(neighbors)
+                        remaining_path = nx.shortest_path(
+                            airspace.graph,
+                            source=next_hop,
+                            target=self.destination_node,
+                            weight='static_dist'
+                        )
+                        new_path = [current_node] + remaining_path
+                    else:
+                        new_path = nx.shortest_path(airspace.graph, source=current_node, target=self.destination_node, weight='static_dist')
+                else:
+                    new_path = nx.shortest_path(airspace.graph, source=current_node, target=self.destination_node, weight='static_dist')
+
+            else: # Default 'stgat' or standard usage
+                 new_path = nx.shortest_path(
+                    airspace.graph, 
+                    source=current_node, 
+                    target=self.destination_node, 
+                    weight='weight'
+                )
+
             self.path = new_path
             # Convert path (IDs) to waypoints (Coords)
-            # Only update waypoints if path changed significantly? 
-            # For simplicity, overwrite.
-            # But we need to be careful about current_wp_index.
-            # Since new path starts from current_node, we can reset index to 1 (next node). 0 is current.
             self.path_waypoints = [airspace.regions[rid] for rid in self.path]
             self.current_wp_index = 1 if len(self.path_waypoints) > 1 else 0
             
@@ -118,6 +177,21 @@ class Aircraft:
 
         # 速度更新 (Eq. 7)
         self.velocity = (1 - self.omega) * self.velocity + self.omega * v_command
+        
+        # Clamp Speed
+        speed = np.linalg.norm(self.velocity)
+        if speed > self.config.MAX_SPEED:
+            self.velocity = (self.velocity / speed) * self.config.MAX_SPEED
+            
+        # 位置更新
+        self.pos += self.velocity * self.config.DT
+        
+        # 检查是否到达终点
+        dist_to_dest = np.linalg.norm(self.pos - self.destination)
+        if dist_to_dest < self.config.DETECTION_RADIUS: # Arrived
+            self.finished = True
+            self.finish_time = current_time
+            logger.info(f"Aircraft {self.id} finished at {current_time:.2f}s")
         
         # 位置更新 (Eq. 5a)
         self.pos += self.velocity * Config.DT

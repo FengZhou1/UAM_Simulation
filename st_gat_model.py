@@ -98,7 +98,11 @@ class STGAT(nn.Module):
         last_out = lstm_out[:, -1, :] # (B*N, H)
         
         # Prediction
+        # nclass needs to be stored or inferred
+        # We can use self.linear.out_features
         out = self.linear(last_out) # (B*N, nclass)
-        out = out.view(batch_size, num_nodes, nclass)
+        # Assuming nclass is the output dimension
+        n_class = self.linear.out_features
+        out = out.view(batch_size, num_nodes, n_class)
         
         return out

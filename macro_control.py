@@ -105,20 +105,8 @@ class STGATController:
                 adj = self.saved_adj if self.saved_adj is not None else torch.eye(len(sorted_nodes)).to(self.device)
                 
                 # Forward
-                # Model signature: (data, adj) -> assuming data is (Batch, Seq, Nodes, Feat) or similar
-                # My STGAT usually takes (x, adj). 
-                # Let's assume the model handles the sequence internally or we trained on flattened history?
-                # For `st_gat_model.py` which seems to be a GAT layer, it likely operates on single step?
-                # Wait, ST-GAT (Spatial-Temporal) usually involves LSTM/GRU + GAT.
-                # If the model is just GAT, it might not handle sequence.
-                # Let's assume the `STGAT` class provided handles it. 
-                # If it's pure GAT, we input the *last* normalized frame.
-                # Assuming model takes (Batch, Features, Nodes)? No, usually (Batch, Nodes, Features)
-                # x_tensor shape is (1, 5, N, 2).
-                # If model is simple GAT, pass last frame:
-                x_in = x_tensor[:, -1, :, :] # (1, N, 2)
-                
-                out = self.model(x_in, adj) # (1, N, 1)
+                # STGAT model expects (Batch, Seq, Nodes, Feat)
+                out = self.model(x_tensor, adj) # (1, N, 1)
                 
                 pred_raw = out.squeeze().cpu().numpy()
                 # Denormalize (Density is feature 0)
