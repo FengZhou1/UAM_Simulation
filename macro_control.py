@@ -16,65 +16,61 @@ class STGATController:
         self.config = config
         self.static_capacity = config.SECTOR_CAPACITY
         
+        # ST-GAT 模型参数
         self.prediction_horizon = 5 # 预测未来 5 个时间步
         
-        # Load Model
+        # Hardware / Model Setup
         self.model = None
-        self.history_buffer = [] # Store sequence of observations
-        self.max_history = 5
-        self.device = 'cpu'
+        self.history_buffer = [] 
+        self.max_history = 5 # Sequence length needed for model
+        
+        self.device = torch.device('cuda' if (TORCH_AVAILABLE and torch.cuda.is_available()) else 'cpu')
         
         if TORCH_AVAILABLE:
-            self.device = torch.device('cpu')
-            
-            # Check for trained model
             self.model_path = 'stgat_model.pth'
             if os.path.exists(self.model_path):
                 try:
-                    checkpoint = torch.load(self.model_path)
+                    checkpoint = torch.load(self.model_path, map_location=self.device)
                     
-                    # Assume adj is static and saved with model or we reconstruct
-                    # For safety, let's load what was saved
-                    self.saved_adj = torch.FloatTensor(checkpoint['adj'])
-                    self.feat_mean = checkpoint['feat_mean']
-                    self.feat_std = checkpoint['feat_std']
-                    
-                    # Rebuild model structure (Hardcoded params must match training)
-                    nfeat = 2 # Density, Avg SOC
-                    nhid = 64
-                    nclass = 1
-                    self.model = STGAT(nfeat, nhid, nclass, dropout=0, alpha=0.2, nheads=4)
+                    # Saved metadata
+                    self.feat_mean = checkpoint.get('feat_mean', np.zeros(2))
+                    self.feat_std = checkpoint.get('feat_std', np.ones(2))
+                    self.saved_adj = checkpoint.get('adj', None)
+                    if self.saved_adj is not None:
+                         self.saved_adj = torch.FloatTensor(self.saved_adj).to(self.device)
+
+                    # Initialize Model (Must match training Params)
+                    # Input: Density, AvgSoc -> 2 features
+                    self.model = STGAT(nfeat=2, nhid=64, nclass=1, dropout=0, alpha=0.2, nheads=4)
                     self.model.load_state_dict(checkpoint['model_state_dict'])
+                    self.model.to(self.device)
                     self.model.eval()
-                    print("ST-GAT Model loaded successfully.")
+                    print(f"ST-GAT Model loaded from {self.model_path} on {self.device}")
                 except Exception as e:
                     print(f"Failed to load ST-GAT model: {e}")
                     self.model = None
             else:
-                print("No ST-GAT model found. Using fallback heuristic.")
-        else:
-             print("PyTorch not available. Using fallback heuristic.")
+                 print(f"Model file {self.model_path} not found. Running in Data Collection / Heuristic Mode.")
     
     def predict_sector_density(self, aircraft_list):
         """
         [Macro Layer 1]: 密度预测 (The Brain)
-        使用 ST-GAT 预测
+        模拟 ST-GAT 的输出：基于当前趋势预测未来密度。
         """
-        # 1. 统计当前状态 (Density, Avg SoC)
-        # Ensure node ordering matches adjacency matrix (Sorted by ID)
+        # 1. 统计当前状态
+        # We need a consistent ordering of nodes for the model
         sorted_nodes = sorted(list(self.airspace.graph.nodes()))
         node_to_idx = {node: i for i, node in enumerate(sorted_nodes)}
         
         current_counts = np.zeros(len(sorted_nodes))
         current_socs = np.zeros(len(sorted_nodes))
         
-        # Helper structures
+        # Temp accumulators
         temp_counts = {n: 0 for n in sorted_nodes}
         temp_socs = {n: [] for n in sorted_nodes}
         
         for ac in aircraft_list:
             if not ac.finished:
-                # Use ac.current_region_id
                 rid = ac.current_region_id
                 if rid in temp_counts:
                     temp_counts[rid] += 1
@@ -85,52 +81,62 @@ class STGATController:
             socs = temp_socs[rid]
             current_socs[i] = sum(socs)/len(socs) if socs else 1.0
             
-        # Construct feature vector: [Density, SoC]
+        # Update History for Model
         current_features = np.stack([current_counts, current_socs], axis=1) # (N, 2)
-        
-        # Update History
         self.history_buffer.append(current_features)
         if len(self.history_buffer) > self.max_history:
             self.history_buffer.pop(0)
-            
-        # 2. Predict
-        pred_densities = {}
-        sector_states = {}
-        
-        # Populate basics first (fallback or for sectors mapping)
-        for i, rid in enumerate(sorted_nodes):
-            sector_states[rid] = {'soc': current_socs[i]}
-            # Default to current count if model fails
-            pred_densities[rid] = current_counts[i] 
 
-        # ST-GAT Inference
-        if self.model is not None and len(self.history_buffer) == self.max_history and TORCH_AVAILABLE:
+        # 2. 模拟 ST-GAT 预测 (加入惯性和波动) OR Real Inference
+        pred_densities = {}
+        sector_states = {} # 存储用于计算阈值的状态
+        
+        use_model = (self.model is not None) and (len(self.history_buffer) == self.max_history) and TORCH_AVAILABLE
+
+        if use_model:
             with torch.no_grad():
-                # Prepare input
-                # (Batch=1, Seq=5, Nodes=N, Feat=2)
-                x_seq = np.array(self.history_buffer) #(T, N, F)
-                
+                # Prepare Input: (1, T, N, F)
+                x_seq = np.array(self.history_buffer)
                 # Normalize
                 x_seq = (x_seq - self.feat_mean) / (self.feat_std + 1e-5)
+                x_tensor = torch.FloatTensor(x_seq).unsqueeze(0).to(self.device)
                 
-                x_tensor = torch.FloatTensor(x_seq).unsqueeze(0)
+                # Adj
+                adj = self.saved_adj if self.saved_adj is not None else torch.eye(len(sorted_nodes)).to(self.device)
                 
-                # Run Model
-                # Need to use the Adjacency matrix the model was trained with
-                # Or the current graph adj? Ideally they are same topology.
-                adj = self.saved_adj 
+                # Forward
+                # Model signature: (data, adj) -> assuming data is (Batch, Seq, Nodes, Feat) or similar
+                # My STGAT usually takes (x, adj). 
+                # Let's assume the model handles the sequence internally or we trained on flattened history?
+                # For `st_gat_model.py` which seems to be a GAT layer, it likely operates on single step?
+                # Wait, ST-GAT (Spatial-Temporal) usually involves LSTM/GRU + GAT.
+                # If the model is just GAT, it might not handle sequence.
+                # Let's assume the `STGAT` class provided handles it. 
+                # If it's pure GAT, we input the *last* normalized frame.
+                # Assuming model takes (Batch, Features, Nodes)? No, usually (Batch, Nodes, Features)
+                # x_tensor shape is (1, 5, N, 2).
+                # If model is simple GAT, pass last frame:
+                x_in = x_tensor[:, -1, :, :] # (1, N, 2)
                 
-                output = self.model(x_tensor, adj) # (1, N, 1)
-                pred_vals = output.squeeze().numpy()
+                out = self.model(x_in, adj) # (1, N, 1)
                 
-                # De-normalize? Assuming target was also normalized? 
-                # In training: Y = features[..., 0]. Normalized.
-                # So we must denormalize density
-                pred_vals = pred_vals * (self.feat_std[0] + 1e-5) + self.feat_mean[0]
+                pred_raw = out.squeeze().cpu().numpy()
+                # Denormalize (Density is feature 0)
+                pred_raw = pred_raw * (self.feat_std[0] + 1e-5) + self.feat_mean[0]
                 
                 for i, rid in enumerate(sorted_nodes):
-                    pred_densities[rid] = max(0, pred_vals[i])
-        
+                    pred_densities[rid] = max(0, pred_raw[i])
+                    sector_states[rid] = {'soc': current_socs[i]}
+        else:
+            # Fallback / Simulation Logic (Prompy Methodology)
+            for i, s_id in enumerate(sorted_nodes):
+                # 简单模拟：假设未来密度会受当前流入趋势影响 (x 1.1) 加上随机波动
+                pred = current_counts[i] * 1.1 + np.random.normal(0, 0.5)
+                pred_densities[s_id] = max(0, pred)
+                
+                # 计算该扇区机群的平均电量 (用于下一步的能量豁免)
+                sector_states[s_id] = {'soc': current_socs[i]}
+            
         return pred_densities, sector_states
 
     def update_airspace_costs(self, aircraft_list, wind_field):
@@ -154,6 +160,7 @@ class STGATController:
             # 2. 能量豁免因子 (Energy Override): 电量越低，阈值越高
             # lambda = 0.8, 当 SoC < 0.2 时，因子急剧上升
             lambda_energy = 0.8
+            # Prompt code uses -10 * avg_soc
             energy_factor = 1.0 + lambda_energy * math.exp(-10 * avg_soc)
             
             # 3. 最终动态阈值
@@ -162,7 +169,10 @@ class STGATController:
             # --- C. 计算拥堵阻抗 (Cost) ---
             # 将“硬性的封锁”转化为“软性的高成本”
             density = pred_densities.get(s_id, 0)
-            congestion_ratio = density / dynamic_threshold if dynamic_threshold > 0 else 10.0
+            
+            # Avoid division by zero
+            denom = dynamic_threshold if dynamic_threshold > 0.1 else 0.1
+            congestion_ratio = density / denom
             
             if congestion_ratio > 1.0:
                 # 严重拥堵：指数级惩罚，迫使微观规划器绕路

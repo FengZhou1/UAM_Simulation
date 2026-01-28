@@ -11,6 +11,10 @@ def train_model(data_path, model_path='stgat_model.pth', epochs=50):
         print("Data file not found. Run simulation in data_collection mode first.")
         return
 
+    # Check device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Training on device: {device}")
+
     # Data format: (num_samples, num_nodes, n_features)
     # We need to construct sequences
     raw_data = np.load(data_path, allow_pickle=True).item()
@@ -18,7 +22,7 @@ def train_model(data_path, model_path='stgat_model.pth', epochs=50):
     adj = raw_data['adj']
     
     # Preprocess Adjacency Matrix
-    adj = torch.FloatTensor(adj)
+    adj = torch.FloatTensor(adj).to(device)
     
     # Create Sequences
     seq_len = 5
@@ -45,15 +49,15 @@ def train_model(data_path, model_path='stgat_model.pth', epochs=50):
     X = np.array(X) 
     Y = np.array(Y)
     
-    X_tensor = torch.FloatTensor(X) # (Samples, T, N, F)
-    Y_tensor = torch.FloatTensor(Y).unsqueeze(-1) # (Samples, N, 1)
+    X_tensor = torch.FloatTensor(X).to(device) # (Samples, T, N, F)
+    Y_tensor = torch.FloatTensor(Y).unsqueeze(-1).to(device) # (Samples, N, 1)
     
     # Model
     nfeat = X_tensor.shape[-1]
     nhid = 64
     nclass = 1 # Regression: density
     
-    model = STGAT(nfeat, nhid, nclass, dropout=0.2, alpha=0.2, nheads=4)
+    model = STGAT(nfeat, nhid, nclass, dropout=0.2, alpha=0.2, nheads=4).to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.005)
     criterion = nn.MSELoss()
     
