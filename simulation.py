@@ -8,8 +8,14 @@ from config import Config
 from utils import get_closest_region
 from airspace import Airspace
 from aircraft import Aircraft
-from route_guidance import RouteGuidance
-from collision_avoidance import CollisionAvoidance
+# from route_guidance import RouteGuidance # Removed
+# from collision_avoidance import CollisionAvoidance # Removed in favor of internal update
+from macro_control import STGATController
+
+class WindField:
+    def get_wind_at(self, pos):
+        # Return scalar wind speed
+        return 5.0
 
 def run_simulation(mode='guided', visualize=True):
     # 配置日志
@@ -20,33 +26,34 @@ def run_simulation(mode='guided', visualize=True):
         level=logging.DEBUG
     )
     logger = logging.getLogger('Simulation')
-    logger.info(f"Starting Simulation in {mode} mode...")
-    print(f"Starting Simulation in {mode} mode...")
+    logger.info(f"Starting Simulation in {mode} mode with ST-GAT...")
+    print(f"Starting Simulation in {mode} mode with ST-GAT...")
 
     # 1. 初始化 (Initialize)
     logger.info("Initializing Airspace...")
     print("Initializing Airspace...")
     airspace = Airspace()
-    rg_module = RouteGuidance(airspace)
+    # rg_module = RouteGuidance(airspace) # Removed
+    
+    # Init Macro Controller
+    macro_controller = STGATController(airspace, Config)
+    wind_field = WindField()
     
     aircraft_list = []
     
     # 场景生成：两组主要航线
     # Group 1: 左 -> 右 (20架)
-    # 起点区域: X [-1600, -1400], Y [-300, 300]
-    # 终点区域: X [1400, 1600], Y [-300, 300]
     for i in range(20):
         start = [np.random.uniform(-1500, -1100), np.random.uniform(-400, 400), 400]
         end = [np.random.uniform(1100, 1500), np.random.uniform(-400, 400), 400]
-        aircraft_list.append(Aircraft(i+1, start, end, 0))
+        # Update Aircraft init with Config
+        aircraft_list.append(Aircraft(i+1, start, end, 0, Config))
         
     # Group 2: 上 -> 下 (20架)
-    # 起点区域: X [-300, 300], Y [1400, 1600]
-    # 终点区域: X [-300, 300], Y [-1600, -1400]
     for i in range(20):
         start = [np.random.uniform(-400, 400), np.random.uniform(1100, 1500), 400]
         end = [np.random.uniform(-400, 400), np.random.uniform(-1500, -1100), 400]
-        aircraft_list.append(Aircraft(i+21, start, end, 0))
+        aircraft_list.append(Aircraft(i+21, start, end, 0, Config))
 
     # 数据记录
     history_pos = {ac.id: [] for ac in aircraft_list}
@@ -142,6 +149,8 @@ def run_simulation(mode='guided', visualize=True):
     # 2. 时间循环 (Time Loop)
     t = 0
     max_steps = int(Config.MAX_TIME / Config.DT)
+    macro_update_steps = int(Config.MACRO_INTERVAL / Config.DT)
+    
     while t < max_steps: # 运行直到完成或超时
         current_time = t * Config.DT
         t += 1
@@ -153,43 +162,18 @@ def run_simulation(mode='guided', visualize=True):
             print("All aircraft finished.")
             break
             
-        # 更新每个飞机所在的 Region
-        for ac in active_aircraft:
-            ac.current_region_id = get_closest_region(ac.pos, airspace.regions)
-            
         # 更新空域拥堵统计
         airspace.update_occupancy(active_aircraft)
+        # ac.current_region_id is updated inside ac.update() now
         
-        # --- B. 路径制导 (Route Guidance) ---
-        # 对应 "Path Update?" 判定，这里每 10 秒重新规划一次
-        if mode == 'guided' and t % 100 == 0:
-            if visualize:
-                plt.title(f'UAM Simulation ({mode.capitalize()} Mode) - Planning...')
-                plt.pause(0.001)
-            rg_module.solve_approximate_optimal_paths(active_aircraft)
-            if visualize:
-                plt.title(f'UAM Simulation ({mode.capitalize()} Mode)')
-            
-        # --- C. 避障 (Collision Avoidance) ---
-        commands = {}
-        for ac in active_aircraft:
-            # 寻找邻居
-            neighbors = []
-            for other in active_aircraft:
-                if ac.id != other.id and np.linalg.norm(ac.pos - other.pos) < Config.DETECTION_RADIUS:
-                    neighbors.append(other)
-            
-            if len(neighbors) > 0:
-                logger.debug(f"Aircraft {ac.id} has {len(neighbors)} neighbors.")
+        # --- 1. 宏观控制层 (Macro) ---
+        if t % macro_update_steps == 0:
+            pred_map = macro_controller.update_airspace_costs(active_aircraft, wind_field)
+            # print(f"[Time {current_time}] Macro Control Update.")
 
-            # 计算速度指令
-            v_cmd = CollisionAvoidance.compute_velocity_command(ac, neighbors)
-            commands[ac.id] = v_cmd
-            
-        # --- D. 动力学更新 (Dynamics) ---
+        # --- 2. 微观执行层 (Micro) ---
         for ac in active_aircraft:
-            if ac.id in commands:
-                ac.update_state(commands[ac.id], current_time)
+            ac.update(Config.DT, airspace)
             history_pos[ac.id].append(ac.pos.copy())
             
         if t % 200 == 0:

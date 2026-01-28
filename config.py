@@ -18,6 +18,14 @@ class Config:
     # --- 路径规划参数 (MFD & Algo 1) ---
     MAX_CANDIDATE_PATHS = 6  # 每个OD对的最大候选路径数
     
+    # ST-GAT Parameters
+    SECTOR_CAPACITY = 5      # 扇区容量 (static capacity)
+    BASE_COST = 10.0         # 基础通行成本
+    HOVER_DISCHARGE_RATE = 0.05 # 悬停耗电率 (/s)
+    CRUISE_DISCHARGE_RATE = 0.02 # 巡航耗电率 (/s)
+    REROUTE_INTERVAL = 30.0  # 微观重规划间隔 (s)
+    MACRO_INTERVAL = 60.0    # 宏观调控间隔 (s)
+
     # MFD 拥堵控制参数 (Eq. 3)
     # 这些参数通常通过拟合得到，这里使用经验值近似
     N_CR = 10.0              # 临界累积量 (Critical Accumulation)
