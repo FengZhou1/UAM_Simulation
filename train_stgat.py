@@ -5,7 +5,7 @@ import numpy as np
 import os
 from st_gat_model import STGAT
 
-def train_model(data_path, model_path='stgat_model.pth', epochs=50):
+def train_model(data_path, model_path='stgat_model.pth', epochs=10):
     print("Loading data...")
     if not os.path.exists(data_path):
         print("Data file not found. Run simulation in data_collection mode first.")
@@ -26,7 +26,7 @@ def train_model(data_path, model_path='stgat_model.pth', epochs=50):
     
     # Create Sequences
     seq_len = 5
-    prediction_horizon = 1
+    prediction_horizon = 10 # Predict 10 steps ahead instead of 1
     
     X = []
     Y = []
@@ -96,4 +96,4 @@ def train_model(data_path, model_path='stgat_model.pth', epochs=50):
     print(f"Model saved to {model_path}")
 
 if __name__ == "__main__":
-    train_model('traffic_data.npy')
+    train_model('training_artifacts/data_grand_iter_3.npy')

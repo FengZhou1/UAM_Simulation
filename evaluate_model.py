@@ -67,7 +67,7 @@ def validate_model(data_path, model_path='stgat_model.pth', output_plot='validat
     
     # Prepare Sequences
     seq_len = 5
-    pred_horizon = 1
+    pred_horizon = 10
     
     # Normalize Test Data
     # IMPORTANT: Use TRAINING stats (from checkpoint)
@@ -80,12 +80,13 @@ def validate_model(data_path, model_path='stgat_model.pth', output_plot='validat
     for i in range(len(norm_features) - seq_len - pred_horizon):
         x_seq = norm_features[i : i+seq_len] # Input: t-4 ... t
         
-        # Target: t+1 (Density only)
+        # Target: t+horizon (Density only)
         # Note: Denormalize target for plotting
         y_target_norm = norm_features[i+seq_len+pred_horizon-1, :, 0] 
         y_target_raw = test_features[i+seq_len+pred_horizon-1, :, 0]
         
         # Baseline: value at t (Last seen) - Persistence Forecast
+        # We compare "what I see now at t" vs "what happens at t+horizon"
         y_last_raw = test_features[i+seq_len-1, :, 0]
         
         X_list.append(x_seq)
