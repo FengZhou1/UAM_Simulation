@@ -25,6 +25,10 @@ class Aircraft:
         self.finish_time = 0.0
         self.current_region_id = -1
         
+        # 统计指标
+        self.distance_traveled = 0.0
+        self.reroute_count = 0
+        
         # 对应 Eq. (7) 的 omega
         self.omega = Config.CONTROL_GAIN * Config.DT
         
@@ -165,6 +169,11 @@ class Aircraft:
                     weight='weight'
                 )
 
+            
+            # Initial plan doesn't count as reroute
+            if self.reroute_timer > 0:
+                self.reroute_count += 1
+            
             self.path = new_path
             # Convert path (IDs) to waypoints (Coords)
             self.path_waypoints = [airspace.regions[rid] for rid in self.path]
@@ -192,7 +201,14 @@ class Aircraft:
             self.velocity = (self.velocity / speed) * self.config.MAX_SPEED
             
         # 位置更新
-        self.pos += self.velocity * self.config.DT
+        # Fix: Duplicate update logic found in previous read_file output
+        # self.pos was updated twice in the context I saw (lines 198 and 208 of context in thought)
+        # But looking at actual file content returned, I need to be careful.
+        # Let's replace the whole block to calculate distance and fix duplicate update if any.
+        
+        step_dist_vector = self.velocity * self.config.DT
+        self.pos += step_dist_vector
+        self.distance_traveled += np.linalg.norm(step_dist_vector)
         
         # 检查是否到达终点
         dist_to_dest = np.linalg.norm(self.pos - self.destination)
@@ -200,9 +216,7 @@ class Aircraft:
             self.finished = True
             self.finish_time = current_time
             logger.info(f"Aircraft {self.id} finished at {current_time:.2f}s")
-        
-        # 位置更新 (Eq. 5a)
-        self.pos += self.velocity * Config.DT
+            return
         
         # 检查是否到达当前航点
         target = self.get_target_waypoint()

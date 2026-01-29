@@ -322,12 +322,37 @@ def run_simulation(mode='guided', visualize=True, routing_policy='stgat', model_
     
     # 统计信息
     finished_aircraft = [ac for ac in aircraft_list if ac.finished]
-    avg_time = 0
-    if finished_aircraft:
-        avg_time = sum([ac.finish_time for ac in finished_aircraft]) / len(finished_aircraft)
-        print(f"Mode: {mode}")
-        print(f"Finished Aircraft: {len(finished_aircraft)} / {len(aircraft_list)}")
-        print(f"Average Flight Time: {avg_time:.2f} s")
+    
+    # 基础指标
+    total_finished = len(finished_aircraft)
+    total_count = len(aircraft_list)
+    completion_rate = total_finished / total_count if total_count > 0 else 0
+    avg_time = sum([ac.finish_time for ac in finished_aircraft]) / total_finished if total_finished > 0 else 0
+    
+    # 进阶指标 (基于 finished aircraft)
+    avg_distance = sum([ac.distance_traveled for ac in finished_aircraft]) / total_finished if total_finished > 0 else 0
+    avg_soc = sum([ac.battery_soc for ac in finished_aircraft]) / total_finished if total_finished > 0 else 0
+    avg_reroutes = sum([ac.reroute_count for ac in finished_aircraft]) / total_finished if total_finished > 0 else 0
+    
+    # 低电量事件 (包括未完成的)
+    low_soc_count = sum([1 for ac in aircraft_list if ac.battery_soc < 0.2])
+    
+    # 死锁/超时统计
+    # 假设 finish_time 非常大或者被标记为 finished 但 SoC > 0 且未到达（其实 aircraft.py 中超时也被标记为 finished）
+    # 我们认为 finish_time > MAX_TIME * 0.9 是超时
+    timeout_count = sum([1 for ac in finished_aircraft if ac.finish_time > Config.MAX_TIME * 0.85])
+
+    print("\n" + "="*40)
+    print(f"SIMULATION REPORT | Mode: {mode}")
+    print("="*40)
+    print(f"Completion Rate   : {total_finished}/{total_count} ({completion_rate*100:.1f}%)")
+    print(f"Avg Flight Time   : {avg_time:.2f} s")
+    print(f"Avg Distance      : {avg_distance:.2f} m")
+    print(f"Avg Final SoC     : {avg_soc*100:.1f}%")
+    print(f"Avg Reroutes      : {avg_reroutes:.1f} times")
+    print(f"Critical Low SoC  : {low_soc_count} aircraft (< 20%)")
+    print(f"Timeouts          : {timeout_count} aircraft (Possible Deadlocks)")
+    print("="*40 + "\n")
     
     if visualize:
         plt.ioff()

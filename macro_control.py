@@ -49,8 +49,8 @@ class STGATController:
                         num_nodes_model = len(self.airspace.graph.nodes())
                         
                         if self.saved_adj is not None:
-                             self.saved_adj = torch.FloatTensor(self.saved_adj).to(self.device)
-                             num_nodes_model = self.saved_adj.shape[0]
+                            self.saved_adj = torch.FloatTensor(self.saved_adj).to(self.device)
+                            num_nodes_model = self.saved_adj.shape[0]
 
                         # Initialize Model (Must match training Params)
                         # Input: Density, AvgSoc -> 2 features
@@ -63,7 +63,7 @@ class STGATController:
                         print(f"Failed to load ST-GAT model: {e}")
                         self.model = None
             else:
-                 print(f"Model file {self.model_path} not found. Running in Data Collection / Heuristic Mode.")
+                print(f"Model file {self.model_path} not found. Running in Data Collection / Heuristic Mode.")
     
     def predict_sector_density(self, aircraft_list):
         """
